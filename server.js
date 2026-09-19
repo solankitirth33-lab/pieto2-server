@@ -112,12 +112,76 @@ app.post('/vision', async (req, res) => {
   }
 });
 
+
+// Pieto voice transcription endpoint.
+// The frontend records microphone audio and sends it here as base64.
+// This deliberately avoids Android SpeechRecognizer so Android error 11
+// cannot break Pieto voice mode.
+app.post('/transcribe', async (req, res) => {
+  try {
+    if (!process.env.OPENROUTER_API_KEY) {
+      return res.status(500).json({ error: 'OPENROUTER_API_KEY is not configured on the server.' });
+    }
+
+    const { audio, audioMime } = req.body || {};
+    if (!audio || typeof audio !== 'string') {
+      return res.status(400).json({ error: 'Missing audio. Send base64 audio in the audio field.' });
+    }
+
+    const mime = typeof audioMime === 'string' && audioMime.trim()
+      ? audioMime.split(';')[0]
+      : 'audio/webm';
+    const extension = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'mp4' : 'webm';
+    const model = process.env.OPENROUTER_STT_MODEL || 'openai/whisper-large-v3-turbo';
+
+    const binary = Buffer.from(audio, 'base64');
+    const boundary = `----PietoBoundary${Date.now()}`;
+    const chunks = [];
+    const addField = (name, value) => {
+      chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+    };
+    addField('model', model);
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="pieto.${extension}"\r\nContent-Type: ${mime}\r\n\r\n`));
+    chunks.push(binary);
+    chunks.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+    const response = await fetch('https://openrouter.ai/api/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'HTTP-Referer': 'https://pieto2-server.onrender.com',
+        'X-Title': 'Pieto'
+      },
+      body: Buffer.concat(chunks)
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: data?.error?.message || data?.error || 'OpenRouter transcription failed',
+        details: data
+      });
+    }
+
+    res.json({
+      ok: true,
+      model: data.model || model,
+      text: typeof data.text === 'string' ? data.text.trim() : ''
+    });
+  } catch (err) {
+    console.error('Pieto transcription error:', err);
+    res.status(500).json({ error: err.message || 'Transcription failed' });
+  }
+});
+
 app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'Pieto server',
     openrouterConfigured: Boolean(process.env.OPENROUTER_API_KEY),
-    visionModel: process.env.OPENROUTER_VISION_MODEL || 'google/gemma-4-31b-it:free'
+    visionModel: process.env.OPENROUTER_VISION_MODEL || 'google/gemma-4-31b-it:free',
+    sttModel: process.env.OPENROUTER_STT_MODEL || 'openai/whisper-large-v3-turbo'
   });
 });
 
