@@ -131,7 +131,7 @@ app.post('/transcribe', async (req, res) => {
     const mime = typeof audioMime === 'string' && audioMime.trim()
       ? audioMime.split(';')[0]
       : 'audio/webm';
-    const extension = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'mp4' : 'webm';
+    const extension = mime.includes('wav') ? 'wav' : mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'mp4' : 'webm';
     const model = process.env.OPENROUTER_STT_MODEL || 'openai/whisper-large-v3-turbo';
 
     const binary = Buffer.from(audio, 'base64');
