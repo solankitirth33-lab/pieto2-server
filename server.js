@@ -27,16 +27,15 @@ app.post('/chat', async (req, res) => {
   }
 });
 
-// Pieto camera vision endpoint.
-// Send { prompt, image } where image is a base64 data URL such as
-// data:image/jpeg;base64,...
+// Pieto camera vision endpoint (Gemini).
+// Send { prompt, image } where image is a base64 data URL or raw base64.
 app.post('/vision', async (req, res) => {
   try {
     const { prompt, image } = req.body || {};
 
-    if (!process.env.OPENROUTER_API_KEY) {
+    if (!process.env.GEMINI_API_KEY) {
       return res.status(500).json({
-        error: 'OPENROUTER_API_KEY is not configured on the server.'
+        error: 'GEMINI_API_KEY is not configured on the server.'
       });
     }
 
@@ -46,69 +45,70 @@ app.post('/vision', async (req, res) => {
       });
     }
 
-    // Accept either a complete data URL or raw base64.
-    const imageUrl = image.startsWith('data:image/')
-      ? image
-      : `data:image/jpeg;base64,${image}`;
+    // Split "data:image/jpeg;base64,XXXX" into mime type + raw base64.
+    const match = image.match(/^data:(image\/[\w.+-]+);base64,([\s\S]+)$/);
+    const mimeType = match ? match[1] : 'image/jpeg';
+    const base64Data = match ? match[2] : image;
 
     const userPrompt =
       typeof prompt === 'string' && prompt.trim()
         ? prompt.trim()
         : 'Describe what you can see in this camera image. Be concise and useful.';
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://pieto2-server.onrender.com',
-        'X-Title': 'Pieto'
-      },
-      body: JSON.stringify({
-        model: process.env.OPENROUTER_VISION_MODEL || 'google/gemma-4-31b-it:free',
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are Pieto, a helpful visual AI assistant. Analyze the provided camera image carefully. Answer the user directly, avoid inventing details, and clearly say when something cannot be determined from the image. Keep answers concise enough to be spoken aloud. Support English, Hindi, and Hinglish.'
+    const model = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': process.env.GEMINI_API_KEY
+        },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{
+              text:
+                'You are Pieto, a helpful visual AI assistant. Analyze the provided camera image carefully. Answer the user directly, avoid inventing details, and clearly say when something cannot be determined from the image. Keep answers concise enough to be spoken aloud. Support English, Hindi, and Hinglish.'
+            }]
           },
-          {
+          contents: [{
             role: 'user',
-            content: [
-              { type: 'text', text: userPrompt },
-              {
-                type: 'image_url',
-                image_url: { url: imageUrl }
-              }
+            parts: [
+              { text: userPrompt },
+              { inline_data: { mime_type: mimeType, data: base64Data } }
             ]
+          }],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 1024
           }
-        ],
-        temperature: 0.2,
-        max_tokens: 300
-      })
-    });
+        })
+      }
+    );
 
     const data = await response.json();
 
     if (!response.ok) {
       return res.status(response.status).json({
-        error: data?.error?.message || data?.error || 'OpenRouter vision request failed',
+        error: data?.error?.message || 'Gemini vision request failed',
         details: data
       });
     }
 
-    const answer = data?.choices?.[0]?.message?.content;
+    const answer = (data?.candidates?.[0]?.content?.parts || [])
+      .map(p => p.text || '')
+      .join('')
+      .trim();
 
     res.json({
       ok: true,
-      model: data.model || process.env.OPENROUTER_VISION_MODEL || 'google/gemma-4-31b-it:free',
-      answer: typeof answer === 'string' ? answer : '',
+      model,
+      answer,
       raw: data
     });
   } catch (err) {
-    res.status(500).json({
-      error: err.message || 'Vision request failed'
-    });
+    res.status(500).json({ error: err.message || 'Vision request failed' });
   }
 });
 
@@ -180,7 +180,8 @@ app.get('/health', (req, res) => {
     ok: true,
     service: 'Pieto server',
     openrouterConfigured: Boolean(process.env.OPENROUTER_API_KEY),
-    visionModel: process.env.OPENROUTER_VISION_MODEL || 'google/gemma-4-31b-it:free',
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    visionModel: process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash',
     sttModel: process.env.OPENROUTER_STT_MODEL || 'openai/whisper-large-v3-turbo'
   });
 });
