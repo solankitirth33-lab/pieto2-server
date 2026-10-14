@@ -114,13 +114,11 @@ app.post('/vision', async (req, res) => {
 
 
 // Pieto voice transcription endpoint.
-// The frontend records microphone audio and sends it here as base64.
-// This deliberately avoids Android SpeechRecognizer so Android error 11
-// cannot break Pieto voice mode.
+// Pieto voice transcription endpoint (Gemini).
 app.post('/transcribe', async (req, res) => {
   try {
-    if (!process.env.OPENROUTER_API_KEY) {
-      return res.status(500).json({ error: 'OPENROUTER_API_KEY is not configured on the server.' });
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
     }
 
     const { audio, audioMime } = req.body || {};
@@ -129,46 +127,48 @@ app.post('/transcribe', async (req, res) => {
     }
 
     const mime = typeof audioMime === 'string' && audioMime.trim()
-      ? audioMime.split(';')[0]
+      ? audioMime.split(';')[0].trim()
       : 'audio/webm';
-    const extension = mime.includes('wav') ? 'wav' : mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'mp4' : 'webm';
-    const model = process.env.OPENROUTER_STT_MODEL || 'openai/whisper-large-v3-turbo';
+    const base64Audio = audio.replace(/^data:[^;]+;base64,/, '');
+    const model = process.env.GEMINI_STT_MODEL || 'gemini-2.5-flash';
 
-    const binary = Buffer.from(audio, 'base64');
-    const boundary = `----PietoBoundary${Date.now()}`;
-    const chunks = [];
-    const addField = (name, value) => {
-      chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
-    };
-    addField('model', model);
-    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="pieto.${extension}"\r\nContent-Type: ${mime}\r\n\r\n`));
-    chunks.push(binary);
-    chunks.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-
-    const response = await fetch('https://openrouter.ai/api/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        'HTTP-Referer': 'https://pieto2-server.onrender.com',
-        'X-Title': 'Pieto'
-      },
-      body: Buffer.concat(chunks)
-    });
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': process.env.GEMINI_API_KEY
+        },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [
+              {
+                text: 'Transcribe this audio exactly as spoken. The speech may be English, Hindi, or Hinglish. Return only the transcription text, nothing else. If there is no speech, return an empty string.'
+              },
+              { inline_data: { mime_type: mime, data: base64Audio } }
+            ]
+          }],
+          generationConfig: { temperature: 0, maxOutputTokens: 1024 }
+        })
+      }
+    );
 
     const data = await response.json();
     if (!response.ok) {
       return res.status(response.status).json({
-        error: data?.error?.message || data?.error || 'OpenRouter transcription failed',
+        error: data?.error?.message || 'Gemini transcription failed',
         details: data
       });
     }
 
-    res.json({
-      ok: true,
-      model: data.model || model,
-      text: typeof data.text === 'string' ? data.text.trim() : ''
-    });
+    const text = (data?.candidates?.[0]?.content?.parts || [])
+      .map(p => p.text || '')
+      .join('')
+      .trim();
+
+    res.json({ ok: true, model, text });
   } catch (err) {
     console.error('Pieto transcription error:', err);
     res.status(500).json({ error: err.message || 'Transcription failed' });
