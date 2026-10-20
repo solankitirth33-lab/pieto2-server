@@ -3,6 +3,7 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 
 const app = express();
+app.set('trust proxy', 1);
 
 app.use(cors());
 app.use(express.json({ limit: '12mb' }));
@@ -172,6 +173,74 @@ app.post('/transcribe', async (req, res) => {
   } catch (err) {
     console.error('Pieto transcription error:', err);
     res.status(500).json({ error: err.message || 'Transcription failed' });
+  }
+});
+
+app.post('/image-generation', async (req, res) => {
+  try {
+    const { prompt } = req.body || {};
+
+    if (!process.env.CLOUDFLARE_ACCOUNT_ID ||
+        !process.env.CLOUDFLARE_API_TOKEN) {
+      return res.status(500).json({
+        ok: false,
+        error: 'Cloudflare credentials are not configured.'
+      });
+    }
+
+    if (typeof prompt !== 'string' || !prompt.trim()) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Please provide an image prompt.'
+      });
+    }
+
+    const model = '@cf/black-forest-labs/flux-1-schnell';
+
+    const response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/ai/run/${model}`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          prompt: prompt.trim().slice(0, 2048)
+        })
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok || !data.success) {
+      return res.status(response.status || 502).json({
+        ok: false,
+        error: data.errors?.[0]?.message || 'Cloudflare image generation failed.'
+      });
+    }
+
+    const image = data.result?.image;
+
+    if (!image) {
+      return res.status(502).json({
+        ok: false,
+        error: 'No image was returned by Cloudflare.'
+      });
+    }
+
+    return res.json({
+      ok: true,
+      model,
+      image: `data:image/jpeg;base64,${image}`
+    });
+
+  } catch (err) {
+    console.error('Pieto image generation error:', err.message);
+    return res.status(500).json({
+      ok: false,
+      error: 'Image generation request failed.'
+    });
   }
 });
 
