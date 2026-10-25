@@ -56,7 +56,7 @@ app.post('/vision', async (req, res) => {
         ? prompt.trim()
         : 'Describe what you can see in this camera image. Be concise and useful.';
 
-    const model = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
+    const model = process.env.GEMINI_VISION_MODEL || 'gemini-3.8-flash';
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -131,7 +131,7 @@ app.post('/transcribe', async (req, res) => {
       ? audioMime.split(';')[0].trim()
       : 'audio/webm';
     const base64Audio = audio.replace(/^data:[^;]+;base64,/, '');
-    const model = process.env.GEMINI_STT_MODEL || 'gemini-2.5-flash';
+    const model = process.env.GEMINI_STT_MODEL || 'gemini-3.8-flash';
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -250,7 +250,7 @@ app.get('/health', (req, res) => {
     service: 'Pieto server',
     openrouterConfigured: Boolean(process.env.OPENROUTER_API_KEY),
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
-    visionModel: process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash',
+    visionModel: process.env.GEMINI_VISION_MODEL || 'gemini-3.8-flash',
     sttModel: process.env.OPENROUTER_STT_MODEL || 'openai/whisper-large-v3-turbo'
   });
 });
