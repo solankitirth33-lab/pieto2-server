@@ -198,6 +198,90 @@ app.post('/chat', chatLimiter, async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ *
+ * File generation — PDF, Word, Excel, HTML, CSV, JSON, code files…
+ *   POST /generate-file
+ *     { format, title?, filename?, content }          -> builds the file from your text/Markdown
+ *     { format, title?, filename?, prompt }           -> Claude writes the content first, then builds it
+ *   Response: { ok, filename, mime, size, base64, dataUrl, content }
+ *   GET  /generate-file/formats -> list of supported formats
+ * ------------------------------------------------------------------ */
+
+const { generateFile, FORMATS } = require('./filegen');
+
+const FILE_WRITER_SYSTEM = `You write the content of a file for the user. Output ONLY the file content, with no preface, no closing remarks, and no wrapping code fence around the whole thing.
+- For documents (pdf/docx/html/md/txt): use clean Markdown. Start with one "# Title" heading, use "##" sections, short paragraphs, bullet lists, and Markdown tables where they help. Be accurate and specific; do not invent facts or sources.
+- For xlsx/csv: output a single Markdown table (or CSV) with a clear header row and consistent columns.
+- For json: output valid JSON only.
+- For code files: output the complete, runnable source code only, with brief comments.
+Write in the language the user used (English, Hindi, or Hinglish).`;
+
+const fileLimiter = rateLimit({ windowMs: 60_000, max: Number(process.env.FILE_RATE_PER_MIN) || 12, name: 'file' });
+
+app.get('/generate-file/formats', (req, res) => res.json({ ok: true, formats: FORMATS }));
+
+app.post('/generate-file', fileLimiter, async (req, res) => {
+  try {
+    const { format, title, filename, prompt } = req.body || {};
+    let content = typeof req.body?.content === 'string' ? req.body.content : '';
+
+    if (!content.trim()) {
+      if (typeof prompt !== 'string' || !prompt.trim()) {
+        return res.status(400).json({ ok: false, error: 'Send either content or a prompt describing the file.' });
+      }
+      if (!process.env.ANTHROPIC_API_KEY) {
+        return res.status(500).json({ ok: false, error: 'ANTHROPIC_API_KEY is not configured on the server.' });
+      }
+      let response, data;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        response = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01'
+          },
+          body: JSON.stringify({
+            model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-5',
+            max_tokens: 6000,
+            system: FILE_WRITER_SYSTEM,
+            messages: [{
+              role: 'user',
+              content: `File type: ${String(format || 'pdf')}\n${title ? `Title: ${title}\n` : ''}Request: ${prompt.trim().slice(0, 4000)}`
+            }]
+          })
+        }, 120000);
+        data = await response.json();
+        if (response.ok || !RETRYABLE.has(response.status)) break;
+        await sleep(800 * attempt);
+      }
+      if (!response.ok) {
+        return res.status(502).json({ ok: false, error: data?.error?.message || 'Could not write the file content.' });
+      }
+      content = (data.content || []).map(b => b.text || '').join('').trim();
+    }
+
+    const file = generateFile({ format, title, filename, content });
+    const base64 = file.buffer.toString('base64');
+    res.json({
+      ok: true,
+      filename: file.filename,
+      mime: file.mime,
+      size: file.buffer.length,
+      base64,
+      dataUrl: `data:${file.mime};base64,${base64}`,
+      content: content.length < 20000 ? content : undefined
+    });
+  } catch (err) {
+    const timedOut = err && err.name === 'AbortError';
+    console.error('Pieto file generation error:', err.message);
+    res.status(timedOut ? 504 : err.status || 500).json({
+      ok: false,
+      error: timedOut ? 'Writing the file took too long. Please try again.' : (err.message || 'File generation failed.')
+    });
+  }
+});
+
+/* ------------------------------------------------------------------ *
  * Vision (Gemini) — unchanged behaviour
  * ------------------------------------------------------------------ */
 
@@ -469,7 +553,8 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'Pieto server',
-    version: '1.2.0',
+    version: '1.3.1',
+    fileFormats: FORMATS,
     anthropicConfigured: Boolean(process.env.ANTHROPIC_API_KEY),
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
     pollinationsConfigured: Boolean(process.env.POLLINATIONS_API_KEY),
