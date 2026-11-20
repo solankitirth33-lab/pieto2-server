@@ -161,6 +161,9 @@ app.post('/chat', chatLimiter, async (req, res) => {
     if (!body.model) body.model = process.env.CLAUDE_MODEL || 'claude-sonnet-4-5';
 
     // Retry transient upstream failures (rate limit / overloaded) with backoff.
+    // With { stream: true } the reply is passed through to the app as Server-Sent Events,
+    // so text appears while it is still being written.
+    const wantsStream = body.stream === true;
     let response, data;
     const maxAttempts = 3;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -178,6 +181,7 @@ app.post('/chat', chatLimiter, async (req, res) => {
           },
           120000
         );
+        if (wantsStream && response.ok) break; // body is read below as a stream
         data = await response.json();
       } catch (err) {
         if (attempt === maxAttempts) throw err;
@@ -186,6 +190,26 @@ app.post('/chat', chatLimiter, async (req, res) => {
       }
       if (response.ok || !RETRYABLE.has(response.status) || attempt === maxAttempts) break;
       await sleep(800 * attempt);
+    }
+
+    if (wantsStream && response.ok) {
+      res.status(200);
+      res.set({
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+      if (res.flushHeaders) res.flushHeaders();
+      const upstream = response.body;
+      // Stop paying for tokens if the app disconnects (user pressed Stop).
+      res.on('close', () => { try { upstream.destroy(); } catch (_) { /* ignore */ } });
+      upstream.on('error', err => {
+        try { res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { message: err.message || 'Stream interrupted.' } })}\n\n`); } catch (_) { /* ignore */ }
+        res.end();
+      });
+      upstream.pipe(res);
+      return;
     }
 
     res.status(response.status).json(data);
@@ -553,7 +577,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'Pieto server',
-    version: '1.3.1',
+    version: '1.4.0',
     fileFormats: FORMATS,
     anthropicConfigured: Boolean(process.env.ANTHROPIC_API_KEY),
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
